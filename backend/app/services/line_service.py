@@ -12,6 +12,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _require_writable(conn, business_day: str, action: str) -> None:
+    """写入口闸只认唯一现行 sealed 批；superseded 旧批不构成锁。"""
+    current = close_repo.current_batch(conn, business_day)
+    if current is not None:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "day_locked",
+                "message": (
+                    f"营业日 {business_day} 已封账（现行批 {current['batch_no']}），"
+                    f"禁止{action}"
+                ),
+                "business_day": business_day,
+                "current_batch": current,
+            },
+        )
+
+
 def list_lines(business_day: str | None = None) -> list[dict[str, Any]]:
     conn = connect()
     try:
@@ -26,8 +44,7 @@ def create_line(body: dict[str, Any]) -> dict[str, Any]:
         day = body.get("business_day") or settings_repo.get(conn, "business_day")
         if not day:
             raise HTTPException(400, "未设置营业日")
-        if close_repo.is_sealed(conn, day):
-            raise HTTPException(409, f"营业日 {day} 已封账，禁止新增流水")
+        _require_writable(conn, day, "新增流水")
         created = _now()
         lid = line_repo.insert_line(
             conn,
@@ -55,8 +72,7 @@ def patch_line(line_id: int, body: dict[str, Any]) -> dict[str, Any]:
         row = line_repo.get_line(conn, line_id)
         if not row:
             raise HTTPException(404, "流水不存在")
-        if close_repo.is_sealed(conn, row["business_day"]):
-            raise HTTPException(409, f"营业日 {row['business_day']} 已封账，禁止修改流水")
+        _require_writable(conn, row["business_day"], "修改流水")
         line_repo.update_line(
             conn,
             line_id,
@@ -79,8 +95,7 @@ def remove_line(line_id: int) -> dict[str, Any]:
         row = line_repo.get_line(conn, line_id)
         if not row:
             raise HTTPException(404, "流水不存在")
-        if close_repo.is_sealed(conn, row["business_day"]):
-            raise HTTPException(409, f"营业日 {row['business_day']} 已封账，禁止删除流水")
+        _require_writable(conn, row["business_day"], "删除流水")
         line_repo.delete_line(conn, line_id)
         conn.commit()
         return {"deleted": True, "id": line_id}

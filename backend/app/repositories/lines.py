@@ -23,7 +23,12 @@ def day_total(conn: sqlite3.Connection, business_day: str) -> tuple[float, int]:
 
 
 def next_line_no(conn: sqlite3.Connection) -> str:
-    n = conn.execute("SELECT COUNT(*) c FROM cash_lines").fetchone()["c"] + 1
+    # MAX(序号) 而非 COUNT：删除流水后 COUNT 会回退，生成重复单号。
+    row = conn.execute(
+        "SELECT MAX(CAST(SUBSTR(line_no, 4) AS INTEGER)) n "
+        "FROM cash_lines WHERE line_no LIKE 'CL-%'"
+    ).fetchone()
+    n = int(row["n"] or 0) + 1
     return f"CL-{n:04d}"
 
 
